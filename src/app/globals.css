@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+html,
+body {
+  margin: 0;
+  background: #f6f8fb;
+  color: #0f172a;
+}
+
+.pipeline-scroll {
+  scrollbar-color: #9aa6b2 #e7ecf1;
+  scrollbar-width: auto;
+}
+
+.pipeline-scroll::-webkit-scrollbar {
+  height: 12px;
+}
+
+.pipeline-scroll::-webkit-scrollbar-track {
+  background: #e7ecf1;
+  border-radius: 999px;
+}
+
+.pipeline-scroll::-webkit-scrollbar-thumb {
+  background: #9aa6b2;
+  border-radius: 999px;
+  border: 2px solid #e7ecf1;
+}
