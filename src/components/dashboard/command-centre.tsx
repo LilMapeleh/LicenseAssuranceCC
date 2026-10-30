@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { MsalProvider, useIsAuthenticated, useMsal } from "@azure/msal-react";
+import { MsalProvider, useMsal } from "@azure/msal-react";
 import type { PublicClientApplication } from "@azure/msal-browser";
 import { BriefingBanner } from "@/components/dashboard/briefing-banner";
 import { CaseDrawer } from "@/components/dashboard/case-drawer";
@@ -32,58 +32,38 @@ import {
 import { ensureMsal, loginRequest } from "@/lib/msal";
 import type { Audience, CaseItem, PipelineTab, RawCase, ResolutionMetrics, TrendPoint } from "@/lib/types";
 
-const skipAuth = process.env.NEXT_PUBLIC_SKIP_AUTH === "true";
-
 export function CommandCentre() {
   const [instance, setInstance] = useState<PublicClientApplication | null>(null);
-  const [bootError, setBootError] = useState("");
 
   useEffect(() => {
-    if (skipAuth) return;
     let cancelled = false;
     ensureMsal()
       .then((pca) => {
         if (!cancelled) setInstance(pca);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setBootError(error instanceof Error ? error.message : "Microsoft sign-in failed to start.");
+        console.error("Microsoft sign-in failed to start", error);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (skipAuth) return <Dashboard />;
-  if (!instance) {
-    return <BootScreen label={bootError || "Initializing Microsoft Authentication..."} />;
-  }
+  if (!instance) return <DashboardScreen msal={null} />;
 
   return (
     <MsalProvider instance={instance}>
-      <Dashboard />
+      <AuthenticatedDashboard />
     </MsalProvider>
   );
 }
 
-function Dashboard() {
-  if (skipAuth) return <DashboardScreen msal={null} authenticated />;
-  return <AuthenticatedDashboard />;
-}
-
 function AuthenticatedDashboard() {
   const msal = useMsal();
-  const authenticated = useIsAuthenticated();
-  return <DashboardScreen msal={msal} authenticated={authenticated} />;
+  return <DashboardScreen msal={msal} />;
 }
 
-function DashboardScreen({
-  msal,
-  authenticated,
-}: {
-  msal: ReturnType<typeof useMsal> | null;
-  authenticated: boolean;
-}) {
-  const [redirectFailed, setRedirectFailed] = useState(false);
+function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) {
   const [cases, setCases] = useState<CaseItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -110,14 +90,9 @@ function DashboardScreen({
     try {
       const response = await msal.instance.acquireTokenSilent({ ...loginRequest, account: msal.accounts[0] });
       return response.accessToken;
-    } catch {
-      try {
-        const response = await msal.instance.acquireTokenPopup(loginRequest);
-        return response.accessToken;
-      } catch (error) {
-        console.error("Token acquisition failed", error);
-        return null;
-      }
+    } catch (error) {
+      console.error("Token acquisition failed", error);
+      return null;
     }
   }, [msal]);
 
@@ -125,11 +100,18 @@ function DashboardScreen({
     try {
       setLoading(true);
       setLoadError("");
+      const health = await fetch("/api/ingestion", { cache: "no-store" });
+      const status = (await health.json()) as { state?: string };
+      if (status.state === "stopped") {
+        setCases([]);
+        setLoadError("Ingestion is offline because the LACC-BE Azure app is stopped. Start that app in the Azure portal, then refresh.");
+        return;
+      }
       const token = await getAccessToken();
       setCases(await fetchCases(token));
     } catch (error) {
       console.error("Failed to fetch cases", error);
-      setLoadError("Could not reach the case service. Sign in, then use Refresh now.");
+      setLoadError("Could not reach the case service. Use Refresh now to try again.");
     } finally {
       setLoading(false);
     }
@@ -147,21 +129,11 @@ function DashboardScreen({
   }, [getAccessToken, metricsTimeframe]);
 
   useEffect(() => {
-    if (skipAuth || !msal || authenticated) return;
-    msal.instance.loginRedirect(loginRequest).catch((error) => {
-      console.error("Auto-redirect login failed", error);
-      setRedirectFailed(true);
-    });
-  }, [authenticated, msal]);
-
-  useEffect(() => {
-    if (!authenticated) return;
     void loadCases();
     void loadAnalytics();
-  }, [authenticated, loadCases, loadAnalytics]);
+  }, [loadCases, loadAnalytics]);
 
   useEffect(() => {
-    if (!authenticated) return;
     let socket: WebSocket | null = null;
     let stopped = false;
     let timer = 0;
@@ -211,7 +183,7 @@ function DashboardScreen({
       window.clearTimeout(timer);
       socket?.close();
     };
-  }, [authenticated]);
+  }, []);
 
   const movementGroups = useMemo(() => getMovementData(cases, lookbackDays), [cases, lookbackDays]);
   const movedOnCount = cases.filter(isMovedOn).length;
@@ -234,17 +206,6 @@ function DashboardScreen({
     if (activeTab === "Moved on") return isMovedOn(item);
     return true;
   });
-
-  const handleLogin = async () => {
-    if (!msal) return;
-    try {
-      await msal.instance.initialize();
-      await msal.instance.loginPopup(loginRequest);
-      setRedirectFailed(false);
-    } catch (error) {
-      console.error("MSAL login error", error);
-    }
-  };
 
   const handleLogout = async () => {
     if (!msal) return;
@@ -324,11 +285,6 @@ function DashboardScreen({
     );
   };
 
-  if (!authenticated) {
-    if (!redirectFailed) return <BootScreen label="Redirecting to Sitecore Microsoft Entra ID Sign-In..." />;
-    return <SignInCard onLogin={handleLogin} />;
-  }
-
   const account = msal?.accounts[0];
 
   return (
@@ -340,7 +296,7 @@ function DashboardScreen({
         connected={wsConnected}
         userName={account?.name}
         userEmail={account?.username}
-        onSignOut={msal ? handleLogout : undefined}
+        onSignOut={account ? handleLogout : undefined}
       />
 
       {loadError && (
@@ -439,27 +395,3 @@ function readString(data: Record<string, unknown>, key: string): string | undefi
   return typeof value === "string" ? value : undefined;
 }
 
-function BootScreen({ label }: { label: string }) {
-  return (
-    <div className="grid min-h-screen place-items-center bg-slate-950 text-white">
-      <p className="text-sm font-semibold text-sky-400">{label}</p>
-    </div>
-  );
-}
-
-function SignInCard({ onLogin }: { onLogin: () => void }) {
-  return (
-    <div className="grid min-h-screen place-items-center bg-slate-950 px-6 text-white">
-      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-800 p-10 text-center shadow-xl">
-        <p className="text-xs font-bold tracking-[0.12em] text-sky-400 uppercase">Sitecore License Assurance</p>
-        <h1 className="mt-2 text-2xl font-extrabold">Command Centre</h1>
-        <p className="mt-3 mb-6 text-[13px] text-slate-400">
-          Sign in with your corporate Microsoft Entra ID account to access cases and pipeline automation.
-        </p>
-        <button type="button" onClick={onLogin} className="w-full rounded-lg bg-sky-700 px-4 py-3 text-sm font-bold">
-          Sign in with Microsoft Azure
-        </button>
-      </div>
-    </div>
-  );
-}
