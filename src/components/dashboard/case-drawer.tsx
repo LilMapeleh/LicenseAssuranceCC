@@ -3,6 +3,13 @@
 import { getCaseTitleColor } from "@/lib/case-utils";
 import type { CaseItem } from "@/lib/types";
 
+function sourceLabel(source?: string): string | null {
+  const value = (source || "").trim().toLowerCase();
+  if (value === "email" || value === "outlook") return "Outlook";
+  if (value === "teams") return "Teams";
+  return source?.trim() || null;
+}
+
 export function CaseDrawer({
   item,
   saving,
@@ -92,7 +99,12 @@ export function CaseDrawer({
                 <div key={email.message_id || index} className="rounded-md border border-slate-300 bg-white p-2.5 text-[11px]">
                   <div className="mb-1 flex justify-between gap-3 font-bold text-slate-950">
                     <span>{email.sender}</span>
-                    <span className="text-[10px] font-medium text-slate-500">{new Date(email.timestamp).toLocaleString()}</span>
+                    <span className="shrink-0 text-right text-[10px] font-medium text-slate-500">
+                      {sourceLabel(email.source) && (
+                        <span className="mr-1.5 font-bold text-slate-700">{sourceLabel(email.source)}</span>
+                      )}
+                      {new Date(email.timestamp).toLocaleString()}
+                    </span>
                   </div>
                   <p className="mb-1 font-semibold text-slate-600">{email.subject}</p>
                   <p className="whitespace-pre-wrap leading-snug text-slate-700">{email.body}</p>

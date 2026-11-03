@@ -1,8 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { MsalProvider, useMsal } from "@azure/msal-react";
-import type { PublicClientApplication } from "@azure/msal-browser";
 import { BriefingBanner } from "@/components/dashboard/briefing-banner";
 import { CaseDrawer } from "@/components/dashboard/case-drawer";
 import { CasePipeline } from "@/components/dashboard/case-pipeline";
@@ -12,7 +10,6 @@ import { MondayDrafts } from "@/components/dashboard/monday-drafts";
 import { MovementPanel } from "@/components/dashboard/movement-panel";
 import { PerformanceMetrics } from "@/components/dashboard/performance-metrics";
 import {
-  dashboardWebSocketUrl,
   fetchCases,
   fetchResolution,
   fetchTrend,
@@ -29,41 +26,10 @@ import {
   isMovedOn,
   mapCase,
 } from "@/lib/case-utils";
-import { ensureMsal, loginRequest } from "@/lib/msal";
+import { authClient } from "@/lib/auth-client";
 import type { Audience, CaseItem, PipelineTab, RawCase, ResolutionMetrics, TrendPoint } from "@/lib/types";
 
-export function CommandCentre() {
-  const [instance, setInstance] = useState<PublicClientApplication | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    ensureMsal()
-      .then((pca) => {
-        if (!cancelled) setInstance(pca);
-      })
-      .catch((error: unknown) => {
-        console.error("Microsoft sign-in failed to start", error);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (!instance) return <DashboardScreen msal={null} />;
-
-  return (
-    <MsalProvider instance={instance}>
-      <AuthenticatedDashboard />
-    </MsalProvider>
-  );
-}
-
-function AuthenticatedDashboard() {
-  const msal = useMsal();
-  return <DashboardScreen msal={msal} />;
-}
-
-function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) {
+export function CommandCentre({ userName, userEmail }: { userName: string; userEmail: string }) {
   const [cases, setCases] = useState<CaseItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -85,48 +51,28 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
     timeframe: "vs. previous 30 days",
   });
 
-  const getAccessToken = useCallback(async () => {
-    if (!msal || msal.accounts.length === 0) return null;
-    try {
-      const response = await msal.instance.acquireTokenSilent({ ...loginRequest, account: msal.accounts[0] });
-      return response.accessToken;
-    } catch (error) {
-      console.error("Token acquisition failed", error);
-      return null;
-    }
-  }, [msal]);
-
   const loadCases = useCallback(async () => {
     try {
       setLoading(true);
       setLoadError("");
-      const health = await fetch("/api/ingestion", { cache: "no-store" });
-      const status = (await health.json()) as { state?: string };
-      if (status.state === "stopped") {
-        setCases([]);
-        setLoadError("Ingestion is offline because the LACC-BE Azure app is stopped. Start that app in the Azure portal, then refresh.");
-        return;
-      }
-      const token = await getAccessToken();
-      setCases(await fetchCases(token));
+      setCases(await fetchCases());
     } catch (error) {
       console.error("Failed to fetch cases", error);
       setLoadError("Could not reach the case service. Use Refresh now to try again.");
     } finally {
       setLoading(false);
     }
-  }, [getAccessToken]);
+  }, []);
 
   const loadAnalytics = useCallback(async () => {
     try {
-      const token = await getAccessToken();
-      const [trend, resolution] = await Promise.all([fetchTrend(token, metricsTimeframe), fetchResolution(token)]);
+      const [trend, resolution] = await Promise.all([fetchTrend(metricsTimeframe), fetchResolution()]);
       setTrendData(trend);
       setResolutionMetrics(resolution);
     } catch (error) {
       console.error("Failed to fetch analytics", error);
     }
-  }, [getAccessToken, metricsTimeframe]);
+  }, [metricsTimeframe]);
 
   useEffect(() => {
     void loadCases();
@@ -134,55 +80,38 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
   }, [loadCases, loadAnalytics]);
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-    let stopped = false;
-    let timer = 0;
-
-    const connect = () => {
-      socket = new WebSocket(dashboardWebSocketUrl());
-      socket.onopen = () => setWsConnected(true);
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data) as {
-            event?: string;
-            id?: string;
-            stage?: string;
-            data?: RawCase & Record<string, unknown>;
-          };
-          if (message.event === "DATABASE_RESET") {
-            setCases([]);
-            return;
-          }
-          if (message.event === "STAGE_UPDATE" && message.id && message.stage) {
-            setCases((current) => current.map((item) => (item.id === message.id ? { ...item, stage: message.stage! } : item)));
-            return;
-          }
-          if (message.event === "NEW_CASE_ENTRY" && message.data) {
-            const mapped = mapCase(message.data);
-            setCases((current) => mergeCase(current, mapped));
-            return;
-          }
-          if (message.event === "CASE_DETAILS_UPDATE" && message.id && message.data) {
-            setCases((current) =>
-              current.map((item) => (item.id === message.id ? applyDetailUpdate(item, message.data!) : item)),
-            );
-          }
-        } catch (error) {
-          console.error("Failed to parse WebSocket message", error);
+    const source = new EventSource("/api/dashboard/stream");
+    source.onopen = () => setWsConnected(true);
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data) as {
+          event?: string;
+          id?: string;
+          stage?: string;
+          data?: RawCase & Record<string, unknown>;
+        };
+        if (message.event === "DATABASE_RESET") {
+          setCases([]);
+          return;
         }
-      };
-      socket.onclose = () => {
-        setWsConnected(false);
-        if (!stopped) timer = window.setTimeout(connect, 4000);
-      };
+        if (message.event === "STAGE_UPDATE" && message.id && message.stage) {
+          setCases((current) => current.map((item) => (item.id === message.id ? { ...item, stage: message.stage! } : item)));
+          return;
+        }
+        if (message.event === "NEW_CASE_ENTRY" && message.data) {
+          const mapped = mapCase(message.data);
+          setCases((current) => mergeCase(current, mapped));
+          return;
+        }
+        if (message.event === "CASE_DETAILS_UPDATE" && message.id && message.data) {
+          setCases((current) => current.map((item) => (item.id === message.id ? applyDetailUpdate(item, message.data!) : item)));
+        }
+      } catch (error) {
+        console.error("Failed to parse dashboard event", error);
+      }
     };
-
-    connect();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      socket?.close();
-    };
+    source.onerror = () => setWsConnected(false);
+    return () => source.close();
   }, []);
 
   const movementGroups = useMemo(() => getMovementData(cases, lookbackDays), [cases, lookbackDays]);
@@ -208,20 +137,20 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
   });
 
   const handleLogout = async () => {
-    if (!msal) return;
-    try {
-      await msal.instance.logoutPopup();
-    } catch (error) {
-      console.error("MSAL logout error", error);
-    }
+    await authClient.signOut({
+      fetchOptions: {
+        onSuccess: () => {
+          window.location.assign("/");
+        },
+      },
+    });
   };
 
   const handleOpenCase = async (item: CaseItem) => {
     setSelectedCase(item);
     if (!item.oppID) return;
     try {
-      const token = await getAccessToken();
-      const salesforce = await refreshSalesforce(token, item.id);
+      const salesforce = await refreshSalesforce(item.id);
       if (!salesforce) return;
       setSelectedCase((current) => (current ? { ...current, salesforce_data: salesforce } : current));
       setCases((current) => current.map((entry) => (entry.id === item.id ? { ...entry, salesforce_data: salesforce } : entry)));
@@ -234,8 +163,7 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
     setDraggedCaseId(null);
     setCases((current) => current.map((item) => (item.id === caseId ? { ...item, stage } : item)));
     try {
-      const token = await getAccessToken();
-      await updateCaseStage(token, caseId, stage);
+      await updateCaseStage(caseId, stage);
     } catch (error) {
       console.error("Failed to update stage", error);
     }
@@ -245,8 +173,7 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
     if (!selectedCase) return;
     setIsSaving(true);
     try {
-      const token = await getAccessToken();
-      await updateCaseDetails(token, selectedCase.id, {
+      await updateCaseDetails(selectedCase.id, {
         status: selectedCase.status,
         next_step: selectedCase.nextStep,
         approach: selectedCase.approach,
@@ -266,8 +193,7 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
   const handleConfidence = async (id: string, closeConfidence: string) => {
     setCases((current) => current.map((item) => (item.id === id ? { ...item, closeConfidence } : item)));
     try {
-      const token = await getAccessToken();
-      await updateCaseDetails(token, id, { close_confidence: closeConfidence });
+      await updateCaseDetails(id, { close_confidence: closeConfidence });
     } catch (error) {
       console.error("Failed to save close confidence", error);
     }
@@ -285,8 +211,6 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
     );
   };
 
-  const account = msal?.accounts[0];
-
   return (
     <div className="min-h-screen bg-[#f6f8fb] px-6 py-7 text-slate-950 sm:px-10 lg:px-12">
       <HeaderBar
@@ -294,9 +218,9 @@ function DashboardScreen({ msal }: { msal: ReturnType<typeof useMsal> | null }) 
         openCases={cases.length}
         quarterDays={getDaysUntilQuarterEnd()}
         connected={wsConnected}
-        userName={account?.name}
-        userEmail={account?.username}
-        onSignOut={account ? handleLogout : undefined}
+        userName={userName}
+        userEmail={userEmail}
+        onSignOut={() => void handleLogout()}
       />
 
       {loadError && (
@@ -387,6 +311,7 @@ function applyDetailUpdate(item: CaseItem, data: RawCase & Record<string, unknow
     owner: readString(data, "owner") ?? item.owner,
     oppID: readString(data, "oppID") ?? item.oppID,
     salesforce_data: (data.salesforce_data as CaseItem["salesforce_data"]) ?? item.salesforce_data,
+    email_history: Array.isArray(data.email_history) ? (data.email_history as CaseItem["email_history"]) : item.email_history,
   };
 }
 

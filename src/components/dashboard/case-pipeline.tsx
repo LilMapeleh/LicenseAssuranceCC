@@ -115,6 +115,7 @@ function CaseCard({
   const responsibility = getNextResponsibility(item);
   const mine = responsibility === "Andrew";
   const salesforceStage = item.salesforce_data?.StageName;
+  const latestActivity = item.email_history?.[item.email_history.length - 1];
 
   return (
     <article
@@ -153,7 +154,11 @@ function CaseCard({
         )}
       </div>
 
-      {item.category && <p className="mb-2 text-[10px] font-semibold uppercase text-slate-500">{item.category}</p>}
+      {item.category && <p className="mb-1 text-[10px] font-semibold uppercase text-slate-500">{item.category}</p>}
+
+      {item.dueDateText && item.dueDateText !== "New" && (
+        <p className="mb-2 text-[11px] font-semibold text-slate-500">{item.dueDateText}</p>
+      )}
 
       <div className="mb-2.5 text-xs leading-snug text-slate-700">
         <p>
@@ -165,6 +170,11 @@ function CaseCard({
       <div className="flex items-start justify-between gap-2 border-t border-slate-100 pt-2">
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-slate-400">Owner: {item.owner}</span>
+          {latestActivity?.source && (
+            <span className="w-fit rounded-full border border-slate-300 bg-white px-1.5 py-0.5 text-[9px] font-bold text-slate-600">
+              {latestActivity.source}
+            </span>
+          )}
           {salesforceStage && salesforceStage !== item.stage && (
             <span className="w-fit rounded-full border border-green-200 bg-green-50 px-1.5 py-0.5 text-[9px] font-bold text-green-800">
               SF: {salesforceStage}

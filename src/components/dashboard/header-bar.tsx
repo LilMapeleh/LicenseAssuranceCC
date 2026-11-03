@@ -1,7 +1,5 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-
 export function HeaderBar({
   dateLabel,
   openCases,
@@ -19,18 +17,6 @@ export function HeaderBar({
   userEmail?: string;
   onSignOut?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [open]);
-
   const statusClass = connected ? "text-emerald-700" : "text-red-600";
 
   return (
@@ -46,35 +32,20 @@ export function HeaderBar({
         </p>
       </div>
 
-      <div className="relative pt-1" ref={menuRef}>
-        {onSignOut ? (
+      <div className="flex items-center gap-3 pt-1">
+        <div className={`inline-flex items-center gap-2 text-[13px] font-medium ${statusClass}`}>
+          <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-600" : "bg-red-600"}`} />
+          {connected ? "Ingestion Live" : "Ingestion Offline"}
+        </div>
+        {onSignOut && (
           <button
             type="button"
-            onClick={() => setOpen((value) => !value)}
-            className={`inline-flex items-center gap-2 text-[13px] font-medium ${statusClass}`}
+            onClick={onSignOut}
+            title={userEmail || userName || "Sign out"}
+            className="cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50"
           >
-            <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-600" : "bg-red-600"}`} />
-            {connected ? "Ingestion Live" : "Ingestion Offline"}
+            Log out
           </button>
-        ) : (
-          <div className={`inline-flex items-center gap-2 text-[13px] font-medium ${statusClass}`}>
-            <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-600" : "bg-red-600"}`} />
-            {connected ? "Ingestion Live" : "Ingestion Offline"}
-          </div>
-        )}
-
-        {open && onSignOut && (
-          <div className="absolute right-0 z-30 mt-2 w-60 rounded-lg border border-slate-200 bg-white p-3 text-left shadow-lg">
-            <p className="text-xs font-bold text-slate-900">{userName || "Signed in"}</p>
-            {userEmail && <p className="mt-0.5 truncate text-[11px] text-slate-500">{userEmail}</p>}
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="mt-3 w-full rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-800"
-            >
-              Sign out
-            </button>
-          </div>
         )}
       </div>
     </header>
